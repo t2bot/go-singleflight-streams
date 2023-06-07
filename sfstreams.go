@@ -99,8 +99,17 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 		if chans, ok := g.calls[key]; !ok {
 			return nil, errors.New(fmt.Sprintf("expected to find singleflight key \"%s\", but didn't", key))
 		} else {
+			skipStream := fnRes == nil
 			writers := make([]io.Writer, 0) // they're actually PipeWriters, but the MultiWriter doesn't like that...
 			for _, ch := range chans {
+				if skipStream {
+					// This needs to be async to prevent a deadlock
+					go func(ch chan<- io.ReadCloser) {
+						ch <- nil
+					}(ch)
+					continue
+				}
+
 				r, w := io.Pipe()
 				writers = append(writers, w) // if `w` becomes a non-PipeWriter, fix `writers` array usage.
 
@@ -111,8 +120,10 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 			}
 			delete(g.calls, key) // we've done all we can for this call: clear it before we unlock
 
-			// Do the io copy async to prevent holding up other singleflight calls
-			go finishCopy(writers, fnRes)
+			if !skipStream {
+				// Do the io copy async to prevent holding up other singleflight calls
+				go finishCopy(writers, fnRes)
+			}
 
 			return nil, nil // we discard the return value
 		}

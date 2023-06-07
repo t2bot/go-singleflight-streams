@@ -127,6 +127,32 @@ func TestDoDuplicates(t *testing.T) {
 	}
 }
 
+func TestDoNilReturn(t *testing.T) {
+	key, _, _ := makeStream()
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return nil, nil
+	}
+
+	g := new(Group)
+	r, err, shared := g.Do(key, workFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared {
+		t.Error("Expected a non-shared result")
+	}
+	if r != nil {
+		t.Error("Expected a nil result")
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
+	}
+}
+
 func TestDoChan(t *testing.T) {
 	key, expectedBytes, src := makeStream()
 
@@ -180,5 +206,32 @@ func TestDoChanError(t *testing.T) {
 	}
 	if res.Err == nil || res.Reader != nil {
 		t.Error("Expected an error; Expected no reader")
+	}
+}
+
+func TestDoChanNilReturn(t *testing.T) {
+	key, _, _ := makeStream()
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return nil, nil
+	}
+
+	g := new(Group)
+	ch := g.DoChan(key, workFn)
+	res := <-ch
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if res.Shared {
+		t.Error("Expected a non-shared result")
+	}
+	if res.Reader != nil {
+		t.Error("Expected a nil result")
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
 	}
 }
