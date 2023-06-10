@@ -47,10 +47,7 @@ func (g *Group) Do(key string, fn func() (io.ReadCloser, error)) (reader io.Read
 	g.mu.Unlock()
 
 	res := <-valCh
-	if res.Err != nil {
-		return nil, res.Err, res.Shared
-	}
-	return <-resCh, nil, res.Shared
+	return <-resCh, res.Err, res.Shared
 }
 
 // DoChan runs Group.Do, but returns a channel that will receive the results/stream when ready.
@@ -86,13 +83,6 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 	return func() (interface{}, error) {
 		fnRes, fnErr := fn()
 
-		if fnErr != nil {
-			g.mu.Lock()
-			delete(g.calls, key)
-			g.mu.Unlock()
-			return nil, fnErr
-		}
-
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		g.sf.Forget(key) // we won't be processing future calls, so wrap it up
@@ -125,7 +115,7 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 				go finishCopy(writers, fnRes)
 			}
 
-			return nil, nil // we discard the return value
+			return nil, fnErr // we discard the return value
 		}
 	}
 }

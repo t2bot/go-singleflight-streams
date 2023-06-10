@@ -153,6 +153,40 @@ func TestDoNilReturn(t *testing.T) {
 	}
 }
 
+func TestDoErrorAndStream(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+	expectedErr := errors.New("this is an error")
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return src, expectedErr
+	}
+
+	g := new(Group)
+	r, err, shared := g.Do(key, workFn)
+	if err != expectedErr {
+		t.Error("Expected a different error")
+	}
+	if shared {
+		t.Error("Expected a non-shared result")
+	}
+	if r == src {
+		t.Error("Reader and source are the same")
+	}
+
+	//goland:noinspection GoUnhandledErrorResult
+	defer r.Close()
+	c, _ := io.Copy(io.Discard, r)
+	if c != expectedBytes {
+		t.Errorf("Read %d bytes but expected %d", c, expectedBytes)
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
+	}
+}
+
 func TestDoChan(t *testing.T) {
 	key, expectedBytes, src := makeStream()
 
@@ -229,6 +263,41 @@ func TestDoChanNilReturn(t *testing.T) {
 	}
 	if res.Reader != nil {
 		t.Error("Expected a nil result")
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
+	}
+}
+
+func TestDoChanErrorAndStream(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+	expectedError := errors.New("this is an error")
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return src, expectedError
+	}
+
+	g := new(Group)
+	ch := g.DoChan(key, workFn)
+	res := <-ch
+	if res.Err != expectedError {
+		t.Error("Expected a different error")
+	}
+	if res.Shared {
+		t.Error("Expected a non-shared result")
+	}
+	if res.Reader == src {
+		t.Error("Reader and source are the same")
+	}
+
+	//goland:noinspection GoUnhandledErrorResult
+	defer res.Reader.Close()
+	c, _ := io.Copy(io.Discard, res.Reader)
+	if c != expectedBytes {
+		t.Errorf("Read %d bytes but expected %d", c, expectedBytes)
 	}
 
 	if callCount != 1 {
