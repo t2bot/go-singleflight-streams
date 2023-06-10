@@ -115,7 +115,7 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 
 				// This needs to be async to prevent a deadlock
 				go func(r io.ReadCloser, ch chan<- io.ReadCloser) {
-					ch <- NewDiscardCloser(r)
+					ch <- newDiscardCloser(r)
 				}(r, ch)
 			}
 			delete(g.calls, key) // we've done all we can for this call: clear it before we unlock
@@ -145,22 +145,22 @@ func finishCopy(writers []io.Writer, fnRes io.ReadCloser) {
 	}
 }
 
-// DiscardCloser discards any remaining data on the underlying reader on close.
-type DiscardCloser struct {
+// discardCloser discards any remaining data on the underlying reader on close.
+type discardCloser struct {
 	io.ReadCloser
 	r io.ReadCloser
 }
 
-// NewDiscardCloser creates a new DiscardCloser from an input io.ReadCloser
-func NewDiscardCloser(r io.ReadCloser) *DiscardCloser {
-	return &DiscardCloser{r: r}
+// newDiscardCloser creates a new discardCloser from an input io.ReadCloser
+func newDiscardCloser(r io.ReadCloser) *discardCloser {
+	return &discardCloser{r: r}
 }
 
-func (d *DiscardCloser) Read(p []byte) (int, error) {
+func (d *discardCloser) Read(p []byte) (int, error) {
 	return d.r.Read(p)
 }
 
-func (d *DiscardCloser) Close() error {
+func (d *discardCloser) Close() error {
 	if _, err := io.Copy(io.Discard, d.r); err != nil {
 		return err
 	}
