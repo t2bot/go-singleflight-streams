@@ -304,3 +304,66 @@ func TestDoChanErrorAndStream(t *testing.T) {
 		t.Errorf("Expected 1 call, got %d", callCount)
 	}
 }
+
+func TestStallOnRead(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+
+	workWg1 := new(sync.WaitGroup)
+	workWg2 := new(sync.WaitGroup)
+	workCh := make(chan int, 1)
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		if callCount == 1 {
+			workWg1.Done()
+		}
+		v := <-workCh
+		workCh <- v
+		time.Sleep(10 * time.Millisecond)
+		return src, nil
+	}
+
+	g := &Group{}
+	readFn := func(i int) {
+		defer workWg2.Done()
+		workWg1.Done()
+		r, err, _ := g.Do(key, workFn)
+		if r != nil {
+			defer func(r io.ReadCloser) {
+				err = r.Close()
+				if err != nil {
+					t.Error(err)
+				}
+			}(r)
+		}
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if i > 0 {
+			return // intentionally don't read from the stream
+		}
+		c, err := io.Copy(io.Discard, r)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if c != expectedBytes {
+			t.Errorf("Read %d bytes instead of %d", c, expectedBytes)
+		}
+	}
+
+	const max = 10
+	workWg1.Add(1)
+	for i := 0; i < max; i++ {
+		workWg1.Add(1)
+		workWg2.Add(1)
+		go readFn(i)
+	}
+	workWg1.Wait()
+	workCh <- 1
+	workWg2.Wait()
+	if callCount <= 0 || callCount >= max {
+		t.Errorf("Expected between 1 and %d calls, got %d", max-1, callCount)
+	}
+}
