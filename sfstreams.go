@@ -1,7 +1,6 @@
 package sfstreams
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -39,7 +38,7 @@ func (g *Group) Do(key string, fn func() (io.ReadCloser, error)) (reader io.Read
 	if _, ok := g.calls[key]; !ok {
 		g.calls[key] = make([]chan<- io.ReadCloser, 0)
 	}
-	resCh := make(chan io.ReadCloser)
+	resCh := make(chan io.ReadCloser, 1)
 	defer close(resCh)
 	g.calls[key] = append(g.calls[key], resCh)
 
@@ -54,7 +53,7 @@ func (g *Group) Do(key string, fn func() (io.ReadCloser, error)) (reader io.Read
 //
 // The returned channel is not closed.
 func (g *Group) DoChan(key string, fn func() (io.ReadCloser, error)) <-chan ReaderResult {
-	ch := make(chan ReaderResult)
+	ch := make(chan ReaderResult, 1)
 	go func(ch chan ReaderResult, g *Group) {
 		r, err, shared := g.Do(key, fn)
 		ch <- ReaderResult{
@@ -87,7 +86,7 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 		defer g.mu.Unlock()
 		g.sf.Forget(key) // we won't be processing future calls, so wrap it up
 		if chans, ok := g.calls[key]; !ok {
-			return nil, errors.New(fmt.Sprintf("expected to find singleflight key \"%s\", but didn't", key))
+			return nil, fmt.Errorf("expected to find singleflight key \"%s\", but didn't", key)
 		} else {
 			skipStream := fnRes == nil
 			writers := make([]io.Writer, 0) // they're actually PipeWriters, but the MultiWriter doesn't like that...
@@ -121,8 +120,9 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 }
 
 func finishCopy(writers []io.Writer, fnRes io.ReadCloser) {
-	//goland:noinspection GoUnhandledErrorResult
-	defer fnRes.Close()
+	defer func(fnRes io.ReadCloser) {
+		_ = fnRes.Close()
+	}(fnRes)
 	mw := io.MultiWriter(writers...)
 	_, copyErr := io.Copy(mw, fnRes)
 	for _, w := range writers {
