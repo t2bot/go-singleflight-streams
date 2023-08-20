@@ -183,7 +183,7 @@ func (a *asyncMultiWriter) Write(p []byte) (int, error) {
 	ch := make(chan *writeResponse, len(a.writers))
 	wg := new(sync.WaitGroup)
 	c := 0
-	for i, _ := range a.writers {
+	for i := range a.writers {
 		if a.skipFlags[i] {
 			continue
 		}
