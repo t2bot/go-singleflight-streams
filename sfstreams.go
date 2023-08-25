@@ -90,10 +90,11 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 		if chans, ok := g.calls[key]; !ok {
 			return nil, fmt.Errorf("expected to find singleflight key \"%s\", but didn't", key)
 		} else {
-			skipStream := fnRes == nil
+			var zero io.ReadCloser
+			canStream := fnRes != nil && fnRes != zero
 			writers := make([]*io.PipeWriter, 0)
 			for _, ch := range chans {
-				if skipStream {
+				if !canStream {
 					// This needs to be async to prevent a deadlock
 					go func(ch chan<- io.ReadCloser) {
 						ch <- nil
@@ -111,7 +112,7 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 			}
 			delete(g.calls, key) // we've done all we can for this call: clear it before we unlock
 
-			if !skipStream {
+			if canStream {
 				// Do the io copy async to prevent holding up other singleflight calls
 				go finishCopy(writers, fnRes)
 			}
