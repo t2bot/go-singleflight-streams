@@ -22,6 +22,17 @@ type Group struct {
 	sf    singleflight.Group
 	mu    sync.Mutex
 	calls map[string][]chan<- io.ReadCloser
+
+	// Normally, the Group will copy the work function's returned reader, but in some cases it is
+	// desirable to maintain the io.Seeker interface. When this option is set to true, the Group
+	// no longer copies but instead returns proxy io.ReadSeekCloser readers that track their own
+	// read state. Whenever one of those readers seeks/reads, it synchronously does so on the work
+	// function's returned io.ReadSeekCloser. This can lead to performance bottlenecks if several
+	// call sites are attempting to read/seek at the same time.
+	//
+	// If this is set to true, but the work function doesn't return an io.ReadSeekCloser, the copy
+	// behaviour is used. When false (the default), the copy behaviour is always used.
+	UseSeekers bool
 }
 
 // Do behaves just like singleflight.Group, with the added guarantee that the returned io.ReadCloser
@@ -92,32 +103,46 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 		} else {
 			var zero io.ReadCloser
 			canStream := fnRes != nil && fnRes != zero
-			writers := make([]*io.PipeWriter, 0)
-			for _, ch := range chans {
-				if !canStream {
+
+			delete(g.calls, key) // we've done all we can for this call: clear it before we unlock
+
+			if !canStream {
+				for _, ch := range chans {
 					// This needs to be async to prevent a deadlock
 					go func(ch chan<- io.ReadCloser) {
 						ch <- nil
 					}(ch)
-					continue
+				}
+				return nil, fnErr // we intentionally discard the return value
+			}
+
+			if g.UseSeekers {
+				if rsc, ok := fnRes.(io.ReadSeekCloser); ok {
+					parent := newParentSeeker(rsc, len(chans))
+					for _, ch := range chans {
+						// This needs to be async to prevent a deadlock
+						go func(ch chan<- io.ReadCloser) {
+							ch <- newSyncSeeker(parent)
+						}(ch)
+					}
+				}
+			} else {
+				writers := make([]*io.PipeWriter, len(chans))
+				for i, ch := range chans {
+					r, w := io.Pipe()
+					writers[i] = w
+
+					// This needs to be async to prevent a deadlock
+					go func(r io.ReadCloser, ch chan<- io.ReadCloser) {
+						ch <- newDiscardCloser(r)
+					}(r, ch)
 				}
 
-				r, w := io.Pipe()
-				writers = append(writers, w)
-
-				// This needs to be async to prevent a deadlock
-				go func(r io.ReadCloser, ch chan<- io.ReadCloser) {
-					ch <- newDiscardCloser(r)
-				}(r, ch)
-			}
-			delete(g.calls, key) // we've done all we can for this call: clear it before we unlock
-
-			if canStream {
 				// Do the io copy async to prevent holding up other singleflight calls
 				go finishCopy(writers, fnRes)
 			}
 
-			return nil, fnErr // we discard the return value
+			return nil, fnErr // we intentionally discard the return value
 		}
 	}
 }

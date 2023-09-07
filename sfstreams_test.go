@@ -10,12 +10,24 @@ import (
 	"time"
 )
 
+type nopReadSeekCloser struct {
+	io.ReadSeeker
+}
+
+func (nopReadSeekCloser) Close() error {
+	return nil
+}
+
+func nopSeekCloser(rs io.ReadSeeker) io.ReadSeekCloser {
+	return nopReadSeekCloser{ReadSeeker: rs}
+}
+
 func makeStream() (key string, expectedBytes int64, src io.ReadCloser) {
 	key = "fake file"
 
 	b := make([]byte, 16*1024) // 16kb
 	_, _ = rand.Read(b)
-	src = io.NopCloser(bytes.NewBuffer(b))
+	src = nopSeekCloser(bytes.NewReader(b))
 
 	expectedBytes = int64(len(b))
 	return
@@ -93,7 +105,7 @@ func TestDoDuplicates(t *testing.T) {
 		return src, nil
 	}
 
-	g := &Group{}
+	g := new(Group)
 	readFn := func() {
 		defer workWg2.Done()
 		workWg1.Done()
@@ -323,7 +335,7 @@ func TestStallOnRead(t *testing.T) {
 		return src, nil
 	}
 
-	g := &Group{}
+	g := new(Group)
 	readFn := func(i int) {
 		defer workWg2.Done()
 		workWg1.Done()
@@ -386,7 +398,7 @@ func TestFasterRead(t *testing.T) {
 		return src, nil
 	}
 
-	g := &Group{}
+	g := new(Group)
 	readFn := func(i int) {
 		defer workWg2.Done()
 		workWg1.Done()
@@ -436,4 +448,143 @@ func TestFasterRead(t *testing.T) {
 	if callCount <= 0 || callCount >= max {
 		t.Errorf("Expected between 1 and %d calls, got %d", max-1, callCount)
 	}
+}
+
+func TestReturnsNoSeekerDefault(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return src, nil
+	}
+
+	g := new(Group)
+	r, err, shared := g.Do(key, workFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared {
+		t.Error("Expected a non-shared result")
+	}
+	if r == src {
+		t.Error("Reader and source are the same")
+	}
+	if _, ok := r.(io.ReadSeekCloser); ok {
+		t.Error("Expected reader to *not* be a ReadSeekCloser")
+	}
+
+	//goland:noinspection GoUnhandledErrorResult
+	defer r.Close()
+	c, _ := io.Copy(io.Discard, r)
+	if c != expectedBytes {
+		t.Errorf("Read %d bytes but expected %d", c, expectedBytes)
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
+	}
+}
+
+func TestReturnsSeekerWhenEnabled(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return src, nil
+	}
+
+	g := new(Group)
+	g.UseSeekers = true
+	r, err, shared := g.Do(key, workFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared {
+		t.Error("Expected a non-shared result")
+	}
+	if r == src {
+		t.Error("Reader and source are the same")
+	}
+	if _, ok := r.(io.ReadSeekCloser); !ok {
+		t.Error("Expected reader to be a ReadSeekCloser")
+	}
+
+	//goland:noinspection GoUnhandledErrorResult
+	defer r.Close()
+	c, _ := io.Copy(io.Discard, r)
+	if c != expectedBytes {
+		t.Errorf("Read %d bytes but expected %d", c, expectedBytes)
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
+	}
+}
+
+func TestSeekerUsesParent(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+
+	skip := int64(10)
+
+	workWg1 := new(sync.WaitGroup)
+	workWg2 := new(sync.WaitGroup)
+	workCh := make(chan int, 1)
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		if callCount == 1 {
+			workWg1.Done()
+		}
+		v := <-workCh
+		workCh <- v
+		time.Sleep(10 * time.Millisecond)
+		return src, nil
+	}
+
+	g := new(Group)
+	g.UseSeekers = true
+	readFn := func(i int) {
+		localSkip := skip + int64(i)
+		defer workWg2.Done()
+		workWg1.Done()
+		r, err, _ := g.Do(key, workFn)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		rsc := r.(io.ReadSeekCloser)
+		offset, err := rsc.Seek(localSkip, io.SeekStart)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if offset != localSkip {
+			t.Errorf("Expected seek to %d instead of %d", localSkip, offset)
+		}
+		c, err := io.Copy(io.Discard, rsc)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if c != (expectedBytes - localSkip) {
+			t.Errorf("Read %d bytes instead of %d", c, expectedBytes)
+		}
+	}
+
+	const max = 10
+	workWg1.Add(1)
+	for i := 0; i < max; i++ {
+		workWg1.Add(1)
+		workWg2.Add(1)
+		go readFn(i)
+	}
+	workWg1.Wait()
+	workCh <- 1
+	workWg2.Wait()
+	if callCount <= 0 || callCount >= max {
+		t.Errorf("Expected between 1 and %d calls, got %d", max-1, callCount)
+	}
+
 }
