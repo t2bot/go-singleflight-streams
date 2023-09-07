@@ -125,22 +125,23 @@ func (g *Group) doWork(key string, fn func() (io.ReadCloser, error)) func() (int
 							ch <- newSyncSeeker(parent)
 						}(ch)
 					}
+					return nil, fnErr // we intentionally discard the return value
 				}
-			} else {
-				writers := make([]*io.PipeWriter, len(chans))
-				for i, ch := range chans {
-					r, w := io.Pipe()
-					writers[i] = w
-
-					// This needs to be async to prevent a deadlock
-					go func(r io.ReadCloser, ch chan<- io.ReadCloser) {
-						ch <- newDiscardCloser(r)
-					}(r, ch)
-				}
-
-				// Do the io copy async to prevent holding up other singleflight calls
-				go finishCopy(writers, fnRes)
 			}
+
+			writers := make([]*io.PipeWriter, len(chans))
+			for i, ch := range chans {
+				r, w := io.Pipe()
+				writers[i] = w
+
+				// This needs to be async to prevent a deadlock
+				go func(r io.ReadCloser, ch chan<- io.ReadCloser) {
+					ch <- newDiscardCloser(r)
+				}(r, ch)
+			}
+
+			// Do the io copy async to prevent holding up other singleflight calls
+			go finishCopy(writers, fnRes)
 
 			return nil, fnErr // we intentionally discard the return value
 		}

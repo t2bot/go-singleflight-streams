@@ -486,6 +486,44 @@ func TestReturnsNoSeekerDefault(t *testing.T) {
 	}
 }
 
+func TestReturnsNoSeekerIfNotGiven(t *testing.T) {
+	key, expectedBytes, src := makeStream()
+	src = io.NopCloser(src) // lose the Seek interface
+
+	callCount := 0
+	workFn := func() (io.ReadCloser, error) {
+		callCount++
+		return src, nil
+	}
+
+	g := new(Group)
+	g.UseSeekers = true
+	r, err, shared := g.Do(key, workFn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared {
+		t.Error("Expected a non-shared result")
+	}
+	if r == src {
+		t.Error("Reader and source are the same")
+	}
+	if _, ok := r.(io.ReadSeekCloser); ok {
+		t.Error("Expected reader to *not* be a ReadSeekCloser")
+	}
+
+	//goland:noinspection GoUnhandledErrorResult
+	defer r.Close()
+	c, _ := io.Copy(io.Discard, r)
+	if c != expectedBytes {
+		t.Errorf("Read %d bytes but expected %d", c, expectedBytes)
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected 1 call, got %d", callCount)
+	}
+}
+
 func TestReturnsSeekerWhenEnabled(t *testing.T) {
 	key, expectedBytes, src := makeStream()
 
