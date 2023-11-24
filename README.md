@@ -58,7 +58,7 @@ func main() {
 			} else {
 				// This shouldn't happen in this example
 				fmt.Println("WARN: Response was not shared!")
-            }
+			}
 
 			// We discard here, but a more realistic handling might be to stream
 			// the response to a user.
